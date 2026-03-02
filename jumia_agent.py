@@ -1,5 +1,5 @@
 import streamlit as st
-import requests
+import cloudscraper # Changed from requests to cloudscraper
 from bs4 import BeautifulSoup
 import google.generativeai as genai
 import pandas as pd
@@ -23,8 +23,8 @@ env_api_key = os.getenv("GEMINI_API_KEY")
 if env_api_key:
     st.sidebar.success("✅ API Key loaded from .env file!")
     api_key = env_api_key
-#else:
-    #api_key = st.sidebar.text_input("Enter Gemini API Key", type="password")
+else:
+    api_key = st.sidebar.text_input("Enter Gemini API Key", type="password")
 
 if api_key:
     genai.configure(api_key=api_key)
@@ -45,28 +45,31 @@ def extract_search_term(user_query):
 def fetch_jumia_products(search_term, limit=10):
     """
     Acts as our 'Jumia API'. 
-    Scrapes Jumia.com.ng for the given search term and returns a list of products.
+    Scrapes Jumia using cloudscraper to bypass 403 blocks.
     """
-    # Formatting query for Jumia search URL
     formatted_query = search_term.replace(' ', '+')
     url = f"https://www.jumia.com.ng/catalog/?q={formatted_query}"
     
-    # Headers to mimic a real browser request and avoid being blocked
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    }
+    # Initialize CloudScraper
+    scraper = cloudscraper.create_scraper(
+        browser={
+            'browser': 'chrome',
+            'platform': 'windows',
+            'desktop': True
+        }
+    )
     
     try:
-        response = requests.get(url, headers=headers, timeout=10)
+        # Using the scraper instead of requests
+        response = scraper.get(url, timeout=15)
         response.raise_for_status()
-    except requests.exceptions.RequestException as e:
-        st.error(f"Failed to connect to Jumia: {e}")
+    except Exception as e:
+        st.error(f"Failed to connect to Jumia. They might be blocking cloud IPs. Error: {e}")
         return []
 
     soup = BeautifulSoup(response.content, 'html.parser')
     products = []
     
-    # Jumia's product cards are usually wrapped in this article class
     articles = soup.find_all('article', class_='prd _fb col c-prd')
     
     for article in articles[:limit]:
@@ -78,7 +81,6 @@ def fetch_jumia_products(search_term, limit=10):
             if name_elem and price_elem:
                 name = name_elem.text.strip()
                 price = price_elem.text.strip()
-                # Resolve relative URLs
                 link = "https://www.jumia.com.ng" + link_elem['href'] if link_elem else "No link available"
                 
                 products.append({
@@ -97,8 +99,6 @@ def get_ai_recommendation(user_query, products):
         return "No products found to analyze."
         
     model = genai.GenerativeModel('gemini-2.5-flash')
-    
-    # Convert product list to a formatted string for the prompt
     products_str = json.dumps(products, indent=2)
     
     prompt = f"""
@@ -120,7 +120,7 @@ def get_ai_recommendation(user_query, products):
 st.title("🛒 Jumia AI Price Checker & Assistant")
 st.markdown("Ask for a product in plain English, and AI will find and analyze the best real-time deals from Jumia.")
 
-user_query = st.text_input("What are you looking to buy?", placeholder="e.g., I need a cheap Samsung smartphone under 150k")
+user_query = st.text_input("What are you looking to buy?", placeholder="e.g., I need a short within range 30,000 naira to 40,000")
 
 if st.button("Search Jumia", type="primary"):
     if not api_key:
@@ -140,18 +140,14 @@ if st.button("Search Jumia", type="primary"):
         else:
             st.success(f"Found {len(products)} products!")
             
-            # Create two columns for layout
             col1, col2 = st.columns([1, 1])
             
             with col1:
                 st.subheader("📋 Raw Jumia Results")
                 df = pd.DataFrame(products)
-                # Display as an interactive dataframe
                 st.dataframe(
                     df, 
-                    column_config={
-                        "Link": st.column_config.LinkColumn("Product Link")
-                    },
+                    column_config={"Link": st.column_config.LinkColumn("Product Link")},
                     hide_index=True
                 )
                 
