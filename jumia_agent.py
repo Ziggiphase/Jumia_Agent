@@ -2,6 +2,7 @@ import streamlit as st
 import cloudscraper # Changed from requests to cloudscraper
 from bs4 import BeautifulSoup
 import google.generativeai as genai
+from google.api_core.exceptions import ResourceExhausted
 import pandas as pd
 import json
 import os
@@ -17,11 +18,16 @@ st.set_page_config(page_title="Jumia AI Assistant", page_icon="🛒", layout="wi
 st.sidebar.title("⚙️ Configuration")
 st.sidebar.markdown("Get your [Gemini API Key here](https://aistudio.google.com/app/apikey).")
 
-# Try to get API key from environment first
+# Try to get API key from environment first, then try Streamlit secrets
 env_api_key = os.getenv("GEMINI_API_KEY")
+if not env_api_key:
+    try:
+        env_api_key = st.secrets.get("GEMINI_API_KEY")
+    except Exception:
+        pass
 
 if env_api_key:
-    st.sidebar.success("✅ API Key loaded from .env file!")
+    st.sidebar.success("✅ API Key loaded successfully!")
     api_key = env_api_key
 else:
     api_key = st.sidebar.text_input("Enter Gemini API Key", type="password")
@@ -39,8 +45,15 @@ def extract_search_term(user_query):
     Only return the search term, nothing else. No quotes, no extra text.
     User request: "{user_query}"
     """
-    response = model.generate_content(prompt)
-    return response.text.strip()
+    try:
+        response = model.generate_content(prompt)
+        return response.text.strip()
+    except ResourceExhausted:
+        st.error("⏳ **Google Gemini API rate limit reached.** The free tier allows limited requests per minute. Please wait 60 seconds and try again.")
+        st.stop()
+    except Exception as e:
+        st.error(f"⚠️ An error occurred: {e}")
+        st.stop()
 
 def fetch_jumia_products(search_term, limit=10):
     """
@@ -112,8 +125,13 @@ def get_ai_recommendation(user_query, products):
     Format your response cleanly using Markdown.
     """
     
-    response = model.generate_content(prompt)
-    return response.text
+    try:
+        response = model.generate_content(prompt)
+        return response.text
+    except ResourceExhausted:
+        return "⏳ **Analysis failed:** Google Gemini API rate limit reached. Please wait a minute before making another search."
+    except Exception as e:
+        return f"⚠️ **Analysis failed:** {e}"
 
 # --- Main App UI ---
 
