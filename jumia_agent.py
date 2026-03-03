@@ -1,5 +1,5 @@
 import streamlit as st
-import cloudscraper # Changed from requests to cloudscraper
+import requests
 from bs4 import BeautifulSoup
 import google.generativeai as genai
 from google.api_core.exceptions import ResourceExhausted
@@ -8,7 +8,7 @@ import json
 import os
 from dotenv import load_dotenv
 
-# Load environment variables from .env file
+# Load environment variables from .env file (for local testing)
 load_dotenv()
 
 # --- Page Configuration ---
@@ -17,8 +17,9 @@ st.set_page_config(page_title="Jumia AI Assistant", page_icon="🛒", layout="wi
 # --- Sidebar Configuration ---
 st.sidebar.title("⚙️ Configuration")
 st.sidebar.markdown("Get your [Gemini API Key here](https://aistudio.google.com/app/apikey).")
+st.sidebar.markdown("Get your [ScraperAPI Key here](https://www.scraperapi.com/).")
 
-# Try to get API key from environment first, then try Streamlit secrets
+# 1. Load Gemini Key
 env_api_key = os.getenv("GEMINI_API_KEY")
 if not env_api_key:
     try:
@@ -27,13 +28,28 @@ if not env_api_key:
         pass
 
 if env_api_key:
-    st.sidebar.success("✅ API Key loaded successfully!")
+    st.sidebar.success("✅ Gemini Key loaded!")
     api_key = env_api_key
+    genai.configure(api_key=api_key)
 else:
     api_key = st.sidebar.text_input("Enter Gemini API Key", type="password")
+    if api_key:
+        genai.configure(api_key=api_key)
 
-if api_key:
-    genai.configure(api_key=api_key)
+# 2. Load ScraperAPI Key
+env_scraper_key = os.getenv("SCRAPER_API_KEY")
+if not env_scraper_key:
+    try:
+        env_scraper_key = st.secrets.get("SCRAPER_API_KEY")
+    except Exception:
+        pass
+
+if env_scraper_key:
+    st.sidebar.success("✅ ScraperAPI Key loaded!")
+    scraper_key = env_scraper_key
+else:
+    scraper_key = st.sidebar.text_input("Enter ScraperAPI Key", type="password")
+
 
 # --- Helper Functions ---
 
@@ -49,7 +65,7 @@ def extract_search_term(user_query):
         response = model.generate_content(prompt)
         return response.text.strip()
     except ResourceExhausted:
-        st.error("⏳ **Google Gemini API rate limit reached.** The free tier allows limited requests per minute. Please wait 60 seconds and try again.")
+        st.error("⏳ **Google Gemini API rate limit reached.** Please wait 60 seconds and try again.")
         st.stop()
     except Exception as e:
         st.error(f"⚠️ An error occurred: {e}")
@@ -57,27 +73,28 @@ def extract_search_term(user_query):
 
 def fetch_jumia_products(search_term, limit=10):
     """
-    Acts as our 'Jumia API'. 
-    Scrapes Jumia using cloudscraper to bypass 403 blocks.
+    Scrapes Jumia using ScraperAPI to completely bypass IP bans and 403 blocks.
     """
+    if not scraper_key:
+        st.error("Missing ScraperAPI Key. Cannot fetch products.")
+        return []
+
     formatted_query = search_term.replace(' ', '+')
-    url = f"https://www.jumia.com.ng/catalog/?q={formatted_query}"
+    target_url = f"https://www.jumia.com.ng/catalog/?q={formatted_query}"
     
-    # Initialize CloudScraper
-    scraper = cloudscraper.create_scraper(
-        browser={
-            'browser': 'chrome',
-            'platform': 'windows',
-            'desktop': True
-        }
-    )
+    # Route the request through ScraperAPI
+    payload = {
+        'api_key': scraper_key, 
+        'url': target_url,
+        'render': 'false' # Set to true only if the site requires JS to load products
+    }
     
     try:
-        # Using the scraper instead of requests
-        response = scraper.get(url, timeout=15)
+        # We hit the ScraperAPI endpoint instead of Jumia directly
+        response = requests.get('http://api.scraperapi.com', params=payload, timeout=60)
         response.raise_for_status()
-    except Exception as e:
-        st.error(f"Failed to connect to Jumia. They might be blocking cloud IPs. Error: {e}")
+    except requests.exceptions.RequestException as e:
+        st.error(f"ScraperAPI failed to fetch the page. Error: {e}")
         return []
 
     soup = BeautifulSoup(response.content, 'html.parser')
@@ -138,11 +155,11 @@ def get_ai_recommendation(user_query, products):
 st.title("🛒 Jumia AI Price Checker & Assistant")
 st.markdown("Ask for a product in plain English, and AI will find and analyze the best real-time deals from Jumia.")
 
-user_query = st.text_input("What are you looking to buy?", placeholder="e.g., I need a short within range 30,000 naira to 40,000")
+user_query = st.text_input("What are you looking to buy?", placeholder="e.g., I need a cheap smart watch under 20000 naira")
 
 if st.button("Search Jumia", type="primary"):
-    if not api_key:
-        st.warning("⚠️ Please enter your Gemini API Key in the sidebar first.")
+    if not api_key or not scraper_key:
+        st.warning("⚠️ Please ensure both Gemini and ScraperAPI keys are provided.")
     elif not user_query:
         st.warning("⚠️ Please enter a product to search for.")
     else:
@@ -150,11 +167,11 @@ if st.button("Search Jumia", type="primary"):
             search_term = extract_search_term(user_query)
             st.info(f"**Target Search Term:** `{search_term}`")
             
-        with st.spinner(f"🌐 Fetching live prices from Jumia for '{search_term}'..."):
+        with st.spinner(f"🌐 Tunneling through ScraperAPI to fetch live prices for '{search_term}'... (This may take 10-20 seconds)"):
             products = fetch_jumia_products(search_term, limit=10)
             
         if not products:
-            st.error("No products found or Jumia blocked the request. Try a different search term.")
+            st.error("No products found. Jumia might have changed their layout, or the proxy timed out.")
         else:
             st.success(f"Found {len(products)} products!")
             
